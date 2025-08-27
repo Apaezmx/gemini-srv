@@ -1,0 +1,197 @@
+body, html {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    height: 100%;
+    overflow: hidden;
+    background-color: #f4f4f8;
+}
+
+.container {
+    display: flex;
+    height: 100vh;
+}
+
+.sidebar {
+    width: 280px;
+    background-color: #ffffff;
+    border-right: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem;
+}
+
+.sidebar-header {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.sidebar-header h2 {
+    margin: 0;
+    color: #333;
+}
+
+#new-conv-btn {
+    width: 100%;
+    padding: 0.75rem;
+    margin-top: 1rem;
+    background-color: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1rem;
+}
+
+#new-conv-btn:hover {
+    background-color: #357abd;
+}
+
+.nav-section {
+    margin-top: 1.5rem;
+    flex-grow: 1;
+    overflow-y: auto;
+}
+
+.nav-section h3 {
+    color: #666;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 0.5rem;
+}
+
+.nav-section ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.nav-section li {
+    padding: 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nav-section li:hover, .nav-section li.active {
+    background-color: #eaf2fa;
+}
+
+.main-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.view {
+    padding: 2rem;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+#welcome-view {
+    text-align: center;
+    padding-top: 10rem;
+    color: #777;
+}
+
+#conversation-view {
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-header, .task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+#delete-conv-btn {
+    background-color: #e24a4a;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+#delete-conv-btn:hover {
+    background-color: #c23535;
+}
+
+.chat-history {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 1rem 0;
+}
+
+.chat-history .message {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border-radius: 8px;
+    white-space: pre-wrap; /* This is the key change */
+    word-wrap: break-word; /* Ensure long lines without spaces still wrap */
+}
+
+.chat-history .message.user {
+    background-color: #eaf2fa;
+}
+
+.chat-history .message.gemini {
+    background-color: #f1f1f1;
+}
+
+.chat-history .message.gemini.loading {
+    color: #555;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { background-color: #f1f1f1; }
+    50% { background-color: #e9e9e9; }
+    100% { background-color: #f1f1f1; }
+}
+
+.prompt-area {
+    border-top: 1px solid #e0e0e0;
+    padding-top: 1rem;
+    display: flex;
+}
+
+#prompt-textarea {
+    flex-grow: 1;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 0.75rem;
+    font-size: 1rem;
+    resize: none;
+}
+
+#send-prompt-btn {
+    margin-left: 1rem;
+    padding: 0 2rem;
+    background-color: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+#task-view {
+    overflow-y: auto;
+}
+
+.task-logs pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background-color: #f8f8f8;
+    padding: 1rem;
+    border-radius: 5px;
+    border: 1px solid #e0e0e0;
+}

@@ -1,0 +1,13 @@
+# Go build artifacts
+gemini-srv
+
+# Local environment file
+.env
+
+# Session and task data
+data/
+test_conversations/
+test_tasks/
+
+# OS-specific files
+.DS_Store

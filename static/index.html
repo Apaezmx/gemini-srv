@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gemini Srv</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Gemini Srv</h2>
+                <button id="new-conv-btn">+ New Conversation</button>
+            </div>
+            <div class="nav-section">
+                <h3>Conversations</h3>
+                <ul id="conversations-list"></ul>
+            </div>
+            <div class="nav-section">
+                <h3>Scheduled Tasks</h3>
+                <ul id="tasks-list"></ul>
+            </div>
+        </div>
+        <div class="main-content">
+            <div id="welcome-view" class="view">
+                <h1>Welcome to Gemini Srv</h1>
+                <p>Select a conversation or task from the left, or start a new conversation.</p>
+            </div>
+
+            <div id="conversation-view" class="view" style="display: none;">
+                <div class="chat-header">
+                    <h3 id="conv-title"></h3>
+                    <button id="delete-conv-btn">Delete</button>
+                </div>
+                <div class="chat-history" id="chat-history"></div>
+                <div class="prompt-area">
+                    <textarea id="prompt-textarea" placeholder="Enter your prompt..."></textarea>
+                    <button id="send-prompt-btn">Send</button>
+                </div>
+            </div>
+
+            <div id="task-view" class="view" style="display: none;">
+                <div class="task-header">
+                    <h3 id="task-title"></h3>
+                </div>
+                <div class="task-logs" id="task-logs">
+                    <pre></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

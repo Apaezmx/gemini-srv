@@ -1,0 +1,6 @@
+2025/08/26 16:07:12 Warning: .env file not found. Relying on existing environment variables.
+Creating new file-based session manager...
+Scheduler started. Loaded tasks and scheduled hourly cleanup.
+Starting server on  :7123
+2025/08/26 16:07:12 Error starting server:listen tcp :7123: bind: address already in use
+exit status 1
