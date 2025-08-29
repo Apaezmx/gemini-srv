@@ -54,6 +54,14 @@ Gemini Srv is a web server and API that provides a user-friendly interface for i
 
 5.  Open your browser and navigate to `http://localhost:7123`.
 
+## Launching the A2A Server
+
+Gemini-srv needs gemini-cli to be running the A2A server. You can get it running with these steps:
+
+1. git clone https://github.com/google-gemini/gemini-cli.git && cd gemini-cli
+2. npm install && npm run build
+3. CODER_AGENT_PORT=41242 npm run start --workspace @google/gemini-cli-a2a-server
+
 ## Running as a Service (systemd)
 
 To run `gemini-srv` as a persistent background service that starts on boot, you can create a `systemd` unit file.
