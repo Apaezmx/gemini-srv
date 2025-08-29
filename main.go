@@ -12,25 +12,35 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gemini-srv/internal/a2aclient"
 	"gemini-srv/internal/scheduler"
+	"gemini-srv/internal/stats"
 	"gemini-srv/session"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	"github.com/pelletier/go-toml/v2"
 )
 
 var (
 	sessionManager   *session.Manager
 	schedulerManager *scheduler.Manager
+	statsManager     *stats.Stats
 	executableDir    string
+	upgrader         = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
 )
 
 // isA2AServerRunning checks if the a2a-server is already running on the specified port.
 func isA2AServerRunning(port string) bool {
-	url := fmt.Sprintf("http://localhost:%s/", port)
+	url := fmt.Sprintf("http://localhost:%s/.well-known/agent-card.json", port)
 	client := http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -77,6 +87,9 @@ func basicAuth(next http.Handler) http.Handler {
 
 func httpBasicsLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
 		fmt.Printf("%s %s %s\n", r.RemoteAddr, r.Method, r.URL)
 		next.ServeHTTP(w, r)
 	})
@@ -84,13 +97,16 @@ func httpBasicsLogger(next http.Handler) http.Handler {
 
 // (API handlers remain the same)
 func listConversationsHandler(w http.ResponseWriter, r *http.Request) {
-	ids, err := sessionManager.ListConversations()
+	conversations, err := sessionManager.ListConversations()
 	if err != nil {
 		http.Error(w, "Failed to list conversations", http.StatusInternalServerError)
 		return
 	}
+	if conversations == nil {
+		conversations = make([]session.ConversationInfo, 0)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ids)
+	json.NewEncoder(w).Encode(conversations)
 }
 
 func createConversationHandler(w http.ResponseWriter, r *http.Request) {
@@ -137,17 +153,79 @@ func postPromptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var reqBody struct {
 		Prompt string `json:"prompt"`
+		AsTask bool   `json:"as_task"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	response, err := sessionManager.RunPrompt(s, reqBody.Prompt)
-	if err != nil {
-		fmt.Printf("Error running prompt for session %s: %v\n", id, err)
+
+	if reqBody.AsTask {
+		taskID, err := sessionManager.RunPromptAsTask(s, reqBody.Prompt)
+		if err != nil {
+			fmt.Printf("Error running prompt as task for session %s: %v\n", id, err)
+			http.Error(w, "Failed to run prompt as task", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"task_id": taskID})
+	} else {
+		response, err := sessionManager.RunPrompt(s, reqBody.Prompt)
+		if err != nil {
+			fmt.Printf("Error running prompt for session %s: %v\n", id, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"response": response})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"response": response})
+}
+
+func postPromptStreamHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer conn.Close()
+
+	id := strings.Split(r.URL.Path, "/")[4]
+	s, err := sessionManager.AcquireSession(id)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	_, p, err := conn.ReadMessage()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	prompt := string(p)
+
+	log.Println("Creating event channel in postPromptStreamHandler")
+	eventChan := make(chan a2aclient.StreamEvent)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Println("Starting goroutine to call RunPromptStream")
+		if err := sessionManager.RunPromptStream(s, prompt, eventChan); err != nil {
+			log.Printf("Error from RunPromptStream: %v\n", err)
+		}
+		log.Println("RunPromptStream finished")
+		close(eventChan)
+	}()
+
+	log.Println("Waiting for events on eventChan...")
+	for event := range eventChan {
+		log.Printf("Relaying event to websocket: %+v\n", event)
+		if err := conn.WriteJSON(event); err != nil {
+			log.Printf("Error writing to websocket: %v\n", err)
+			return
+		}
+	}
+	log.Println("Event channel closed in postPromptStreamHandler.")
+	wg.Wait()
 }
 
 func deleteConversationHandler(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +244,7 @@ func listTasksHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to read tasks directory", http.StatusInternalServerError)
 		return
 	}
-	var tasks []string
+	tasks := make([]string, 0)
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".toml") {
 			tasks = append(tasks, strings.TrimSuffix(file.Name(), ".toml"))
@@ -195,6 +273,62 @@ func getTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(logs)
+}
+
+func getTaskDetailsHandler(w http.ResponseWriter, r *http.Request) {
+	taskName := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	taskPath := filepath.Join(executableDir, "data/tasks", taskName+".toml")
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	var task scheduler.Task
+	if err := toml.Unmarshal(data, &task); err != nil {
+		http.Error(w, "Failed to parse task file", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
+	taskName := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	taskPath := filepath.Join(executableDir, "data/tasks", taskName+".toml")
+
+	if err := os.Remove(taskPath); err != nil {
+		http.Error(w, "Failed to delete task", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
+	taskName := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	taskPath := filepath.Join(executableDir, "data/tasks", taskName+".toml")
+
+	var task scheduler.Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	data, err := toml.Marshal(task)
+	if err != nil {
+		http.Error(w, "Failed to marshal task to TOML", http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.WriteFile(taskPath, data, 0644); err != nil {
+		http.Error(w, "Failed to write task file", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func startA2AServer() {
@@ -247,7 +381,9 @@ func main() {
 		log.Fatal("Error creating a2a client:", err)
 	}
 
-	sessionManager, err = session.NewManager(executableDir, a2aClient)
+	statsManager = stats.New()
+
+	sessionManager, err = session.NewManager(executableDir, a2aClient, statsManager)
 	if err != nil {
 		log.Fatal("Error creating session manager:", err)
 	}
@@ -260,7 +396,16 @@ func main() {
 	fs := http.FileServer(http.Dir(staticDir))
 	http.Handle("/", fs)
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	http.Handle("/api/", setupRouter())
 
+	port := ":7123"
+	fmt.Println("Starting server on ", port)
+	if err := http.ListenAndServe(port, nil); err != nil {
+		log.Fatal("Error starting server:", err)
+	}
+}
+
+func setupRouter() http.Handler {
 	apiV1 := http.NewServeMux()
 	// (API handlers routing remains the same)
 	apiV1.HandleFunc("/api/v1/conversations", func(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +427,10 @@ func main() {
 			}
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/prompt/stream") {
+			httpBasicsLogger(basicAuth(http.HandlerFunc(postPromptStreamHandler))).ServeHTTP(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getConversationHandler(w, r)
@@ -295,16 +444,28 @@ func main() {
 	apiV1.HandleFunc("/api/v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/logs") {
 			getTaskLogsHandler(w, r)
-		} else {
-			http.NotFound(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			getTaskDetailsHandler(w, r)
+		case http.MethodDelete:
+			deleteTaskHandler(w, r)
+		case http.MethodPut:
+			updateTaskHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	apiV1.HandleFunc("/api/v1/model", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"model": "gemini-2.5-pro"})
+	})
 
-	http.Handle("/api/", httpBasicsLogger(basicAuth(apiV1)))
+	apiV1.HandleFunc("/api/v1/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(statsManager.Get())
+	})
 
-	port := ":7123"
-	fmt.Println("Starting server on ", port)
-	if err := http.ListenAndServe(port, nil); err != nil {
-		log.Fatal("Error starting server:", err)
-	}
+	return httpBasicsLogger(basicAuth(apiV1))
 }

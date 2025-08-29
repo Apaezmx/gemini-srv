@@ -27,7 +27,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const promptTextarea = document.getElementById('prompt-textarea');
     const sendPromptBtn = document.getElementById('send-prompt-btn');
     const taskTitle = document.getElementById('task-title');
-    const taskLogs = document.getElementById('task-logs').querySelector('pre');
+    const taskDetailsView = document.getElementById('task-details-view');
+    const taskForm = document.getElementById('task-form');
+    const deleteTaskBtn = document.getElementById('delete-task-btn');
+    const taskLogsView = document.getElementById('task-logs-view');
+    const taskLogs = taskLogsView.querySelector('pre');
+
+    const modelInfo = document.getElementById('model-info');
+    const statsInfo = document.getElementById('stats-info');
 
     // --- API FUNCTIONS ---
     const api = {
@@ -39,24 +46,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }).then(res => res.json()),
         getConversation: (id) => fetch(`/api/v1/conversations/${id}`).then(res => res.json()),
         deleteConversation: (id) => fetch(`/api/v1/conversations/${id}`, { method: 'DELETE' }),
-        postPrompt: (id, prompt) => fetch(`/api/v1/conversations/${id}/prompt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt }),
-        }).then(res => res.json()),
         getTasks: () => fetch('/api/v1/tasks').then(res => res.json()),
         getTaskLogs: (taskName) => fetch(`/api/v1/tasks/${taskName}/logs`).then(res => res.json()),
+        getTaskDetails: (taskName) => fetch(`/api/v1/tasks/${taskName}`).then(res => res.json()),
+        deleteTask: (taskName) => fetch(`/api/v1/tasks/${taskName}`, { method: 'DELETE' }),
+        updateTask: (taskName, task) => fetch(`/api/v1/tasks/${taskName}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(task),
+        }),
+        getModel: () => fetch('/api/v1/model').then(res => res.json()),
+        getStats: () => fetch('/api/v1/stats').then(res => res.json()),
     };
 
     // --- RENDER FUNCTIONS ---
     const renderConversations = async () => {
-        const ids = await api.getConversations();
+        const conversations = await api.getConversations();
         conversationsList.innerHTML = '';
-        ids.forEach(id => {
+        conversations.forEach(conv => {
             const li = document.createElement('li');
-            li.textContent = id;
-            li.dataset.id = id;
-            li.addEventListener('click', () => selectConversation(id));
+            li.textContent = conv.name;
+            li.dataset.id = conv.id;
+            li.addEventListener('click', () => selectConversation(conv.id));
             conversationsList.appendChild(li);
         });
     };
@@ -76,8 +87,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderChatHistory = (history) => {
         chatHistory.innerHTML = '';
         history.forEach(line => {
-            const [type, ...contentParts] = line.split(': ');
-            const content = contentParts.join(': ');
+            const parts = line.split(': ');
+            const type = parts[0];
+            const content = parts.slice(1).join(': ');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type.toLowerCase()}`;
             messageDiv.textContent = content;
@@ -96,7 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const selectConversation = async (id) => {
         currentConversationId = id;
         const conv = await api.getConversation(id);
-        convTitle.textContent = `Conversation: ${id}`;
+        convTitle.textContent = conv.name;
         renderChatHistory(conv.history);
         showView(conversationView);
         
@@ -108,9 +120,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const selectTask = async (taskName) => {
         currentConversationId = null;
+        const task = await api.getTaskDetails(taskName);
+        taskTitle.textContent = `Task: ${task.name}`;
+        taskForm.elements.name.value = task.name;
+        taskForm.elements.description.value = task.description;
+        taskForm.elements.schedule.value = task.schedule;
+        taskForm.elements.context_path.value = task.context_path;
+        taskForm.elements.data_command.value = task.data_command;
+        taskForm.elements.prompt.value = task.prompt;
+
         const logs = await api.getTaskLogs(taskName);
-        taskTitle.textContent = `Logs for: ${taskName}`;
         taskLogs.textContent = logs.join('\n\n---\n\n');
+        taskLogsView.style.display = 'block';
+        
         showView(taskView);
 
         document.querySelectorAll('#tasks-list li').forEach(li => {
@@ -133,40 +155,80 @@ document.addEventListener('DOMContentLoaded', () => {
         promptTextarea.disabled = true;
         sendPromptBtn.disabled = true;
 
-        // Add user message and loading indicator to UI immediately
+        // Add user message to UI immediately
         const userMessageDiv = document.createElement('div');
         userMessageDiv.className = 'message user';
         userMessageDiv.textContent = prompt;
         chatHistory.appendChild(userMessageDiv);
 
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'message gemini loading';
-        chatHistory.appendChild(loadingDiv);
+        // This will hold the thinking box and the final response
+        const agentResponseContainer = document.createElement('div');
+        chatHistory.appendChild(agentResponseContainer);
+
+        const geminiMessageDiv = document.createElement('div');
+        geminiMessageDiv.className = 'message gemini';
+        
+        const loadingIndicator = document.createElement('div');
+        loadingIndicator.className = 'loading-indicator';
+        loadingIndicator.textContent = 'Thinking...';
+        geminiMessageDiv.appendChild(loadingIndicator);
+        agentResponseContainer.appendChild(geminiMessageDiv); // Add gemini message div from the start
+
         chatHistory.scrollTop = chatHistory.scrollHeight;
 
-        let statementIndex = 0;
-        loadingDiv.textContent = funStatements[statementIndex];
-        const intervalId = setInterval(() => {
-            statementIndex = (statementIndex + 1) % funStatements.length;
-            loadingDiv.textContent = funStatements[statementIndex];
-        }, 1500);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/conversations/${currentConversationId}/prompt/stream`);
 
-        try {
-            await api.postPrompt(currentConversationId, prompt);
-        } catch (error) {
-            console.error("Failed to send prompt:", error);
-            loadingDiv.textContent = "Error: Could not get response from server.";
-            loadingDiv.classList.remove('loading');
-        } finally {
-            clearInterval(intervalId);
-            // Refresh the entire chat history from the server to ensure consistency
-            const conv = await api.getConversation(currentConversationId);
-            renderChatHistory(conv.history);
+        let thinkingBox = null;
+        let hasReceivedText = false;
 
+        socket.onopen = () => {
+            socket.send(prompt);
+        };
+
+        socket.onmessage = (event) => {
+            if (loadingIndicator.parentNode) {
+                loadingIndicator.remove();
+            }
+
+            const data = JSON.parse(event.data);
+
+            if (data.kind === 'data' && data.data && data.data.subject && !hasReceivedText) {
+                if (!thinkingBox) {
+                    thinkingBox = document.createElement('div');
+                    thinkingBox.className = 'thinking-box';
+                    agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                }
+                thinkingBox.innerHTML = `<h5>${data.data.subject}</h5><p>${data.data.description}</p>`;
+            } else if (data.kind === 'text') {
+                if (!hasReceivedText) {
+                    // First text chunk
+                    hasReceivedText = true;
+                    if (thinkingBox) {
+                        thinkingBox.remove();
+                        thinkingBox = null;
+                    }
+                }
+                geminiMessageDiv.textContent += data.text;
+            }
+        };
+
+        socket.onclose = () => {
+            if (thinkingBox) {
+                thinkingBox.remove();
+            }
             promptTextarea.disabled = false;
             sendPromptBtn.disabled = false;
             promptTextarea.focus();
-        }
+        };
+
+        socket.onerror = (error) => {
+            console.error("WebSocket error:", error);
+            if (loadingIndicator.parentNode) {
+                loadingIndicator.remove();
+            }
+            geminiMessageDiv.textContent = "Error: Could not get response from server.";
+        };
     };
 
     const handleDeleteConversation = async () => {
@@ -191,10 +253,48 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        taskForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const taskName = taskForm.elements.name.value;
+            const task = {
+                name: taskName,
+                description: taskForm.elements.description.value,
+                schedule: taskForm.elements.schedule.value,
+                context_path: taskForm.elements.context_path.value,
+                data_command: taskForm.elements.data_command.value,
+                prompt: taskForm.elements.prompt.value,
+            };
+            await api.updateTask(taskName, task);
+            alert('Task saved!');
+            await renderTasks();
+        });
+
+        deleteTaskBtn.addEventListener('click', async () => {
+            const taskName = taskForm.elements.name.value;
+            if (confirm(`Are you sure you want to delete task ${taskName}?`)) {
+                await api.deleteTask(taskName);
+                await renderTasks();
+                showView(welcomeView);
+            }
+        });
+
         renderConversations();
         renderTasks();
         showView(welcomeView);
     };
 
+    const fetchAndDisplayModel = async () => {
+        const model = await api.getModel();
+        modelInfo.textContent = `Model: ${model.model}`;
+    };
+
+    const fetchAndDisplayStats = async () => {
+        const stats = await api.getStats();
+        statsInfo.textContent = `Calls: ${stats.total_calls} | Avg Latency: ${stats.avg_latency_ms}ms | Chars In: ${stats.total_chars_in} | Chars Out: ${stats.total_chars_out}`;
+    };
+
     init();
+    fetchAndDisplayModel();
+    fetchAndDisplayStats();
+    setInterval(fetchAndDisplayStats, 5000);
 });
