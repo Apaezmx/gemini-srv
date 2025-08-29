@@ -6,16 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
-	"gemini-srv/internal/a2aclient"
 	"gemini-srv/internal/scheduler"
 	"gemini-srv/internal/stats"
 	"gemini-srv/session"
@@ -24,6 +20,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	"github.com/pelletier/go-toml/v2"
+	"trpc.group/trpc-go/trpc-a2a-go/client"
+	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 )
 
 var (
@@ -37,25 +35,6 @@ var (
 		},
 	}
 )
-
-// isA2AServerRunning checks if the a2a-server is already running on the specified port.
-func isA2AServerRunning(port string) bool {
-	url := fmt.Sprintf("http://localhost:%s/.well-known/agent-card.json", port)
-	client := http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			log.Printf("a2a-server timed out on port %s. Assuming not running.", port)
-			// Timeout means the server is likely not running or not responding quickly
-			return false
-		}
-		log.Printf("Error checking a2a-server status: %v. Assuming not running.", err)
-		// Other errors might indicate connection refused, which also means not running
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
 
 // (Auth and logging middleware remain the same)
 func basicAuth(next http.Handler) http.Handler {
@@ -202,7 +181,7 @@ func postPromptStreamHandler(w http.ResponseWriter, r *http.Request) {
 	prompt := string(p)
 
 	log.Println("Creating event channel in postPromptStreamHandler")
-	eventChan := make(chan a2aclient.StreamEvent)
+	eventChan := make(chan protocol.StreamingMessageEvent)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -218,8 +197,8 @@ func postPromptStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Waiting for events on eventChan...")
 	for event := range eventChan {
-		log.Printf("Relaying event to websocket: %+v\n", event)
-		if err := conn.WriteJSON(event); err != nil {
+		log.Printf("Relaying event to websocket: %+v\n", event.Result)
+		if err := conn.WriteJSON(event.Result); err != nil {
 			log.Printf("Error writing to websocket: %v\n", err)
 			return
 		}
@@ -331,24 +310,6 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func startA2AServer() {
-	startCmd := os.Getenv("A2A_SERVER_START_COMMAND")
-	if startCmd == "" {
-		log.Fatal("A2A_SERVER_START_COMMAND not set")
-	}
-	parts := strings.Fields(startCmd)
-	cmd := exec.Command(parts[0], parts[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start a2a-server: %v", err)
-	}
-	go func() {
-		cmd.Wait()
-		log.Println("a2a-server has exited.")
-	}()
-}
-
 func main() {
 	var err error
 	executable, err := os.Executable()
@@ -361,22 +322,12 @@ func main() {
 		log.Println("Warning: .env file not found.")
 	}
 
-	a2aServerPort := os.Getenv("A2A_SERVER_PORT")
-	if a2aServerPort == "" {
-		log.Fatal("A2A_SERVER_PORT environment variable not set")
+	a2aServerURL := os.Getenv("A2A_SERVER_URL")
+	if a2aServerURL == "" {
+		log.Fatal("A2A_SERVER_URL environment variable not set")
 	}
 
-	if isA2AServerRunning(a2aServerPort) {
-		log.Printf("a2a-server already running on port %s. Skipping startup.", a2aServerPort)
-	} else {
-		log.Printf("Starting a2a-server on port %s...", a2aServerPort)
-		// Start the a2a-server in the background
-		startA2AServer()
-		// Give it a moment to start up before we try to connect
-		time.Sleep(3 * time.Second)
-	}
-
-	a2aClient, err := a2aclient.New()
+	a2aClient, err := client.NewA2AClient(a2aServerURL)
 	if err != nil {
 		log.Fatal("Error creating a2a client:", err)
 	}

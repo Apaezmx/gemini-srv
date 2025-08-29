@@ -192,24 +192,62 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const data = JSON.parse(event.data);
+            console.log("Received WS data:", data); // For debugging
 
-            if (data.kind === 'data' && data.data && data.data.subject && !hasReceivedText) {
-                if (!thinkingBox) {
-                    thinkingBox = document.createElement('div');
-                    thinkingBox.className = 'thinking-box';
-                    agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
-                }
-                thinkingBox.innerHTML = `<h5>${data.data.subject}</h5><p>${data.data.description}</p>`;
-            } else if (data.kind === 'text') {
+            // Helper function to process message parts and display text
+            const processMessageParts = (parts) => {
                 if (!hasReceivedText) {
-                    // First text chunk
                     hasReceivedText = true;
                     if (thinkingBox) {
                         thinkingBox.remove();
                         thinkingBox = null;
                     }
                 }
-                geminiMessageDiv.textContent += data.text;
+                parts.forEach(part => {
+                    if (part.kind === 'text') {
+                        geminiMessageDiv.textContent += part.text;
+                    }
+                });
+            };
+
+            switch (data.kind) {
+                case 'message':
+                    processMessageParts(data.parts);
+                    break;
+
+                case 'task':
+                    if (!thinkingBox) {
+                        thinkingBox = document.createElement('div');
+                        thinkingBox.className = 'thinking-box';
+                        agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                    }
+                    thinkingBox.innerHTML = `<h5>Task Created</h5><p>Status: ${data.status.state}</p>`;
+                    break;
+
+                case 'task_status_update':
+                    if (!thinkingBox) {
+                        thinkingBox = document.createElement('div');
+                        thinkingBox.className = 'thinking-box';
+                        agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                    }
+                    thinkingBox.innerHTML = `<h5>Task Status: ${data.status.state}</h5>`;
+
+                    if (data.status.message && data.status.message.parts) {
+                        processMessageParts(data.status.message.parts);
+                    }
+                    break;
+                
+                case 'task_artifact_update':
+                    if (!thinkingBox) {
+                        thinkingBox = document.createElement('div');
+                        thinkingBox.className = 'thinking-box';
+                        agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                    }
+                    thinkingBox.innerHTML = `<h5>Processing Artifact...</h5>`;
+                    break;
+
+                default:
+                    console.log("Received unhandled event kind:", data.kind);
             }
         };
 
