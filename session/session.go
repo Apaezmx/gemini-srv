@@ -15,6 +15,8 @@ import (
 // Session represents a single user's conversational history.
 type Session struct {
 	ID               string    `json:"id"`
+	a2aTaskID        string    `json:"task_id"`
+	a2aContextID     string    `json:"context_id"`
 	Name             string    `json:"name"`
 	History          []string  `json:"history"`
 	LastAccess       time.Time `json:"last_access"`
@@ -172,7 +174,15 @@ func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- a2
 		}
 	}()
 
-	err := m.a2aClient.SendPromptStream(s.ID, prompt, internalChan)
+	cID, tID, err := m.a2aClient.SendPromptStream(s.a2aContextID, s.a2aTaskID, prompt, internalChan)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Context ID: %s, Task ID: %s\n", cID, tID)
+	s.a2aContextID = cID
+	s.a2aTaskID = tID
+
 	close(internalChan)
 	wg.Wait()
 

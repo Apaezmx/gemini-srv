@@ -27,7 +27,7 @@ type StreamEventData struct {
 type A2AClient interface {
 	SendPrompt(contextID, prompt string) (string, error)
 	SendPromptAsTask(contextID, prompt string) (string, error)
-	SendPromptStream(contextID, prompt string, eventChan chan<- StreamEvent) error
+	SendPromptStream(contextID, taskID, prompt string, eventChan chan<- StreamEvent) (string, string, error)
 }
 
 type Client struct {
@@ -234,7 +234,7 @@ func (c *Client) SendPromptAsTask(contextID, prompt string) (string, error) {
 }
 
 // SendPromptStream sends a prompt to the a2a-server and streams the response.
-func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- StreamEvent) error {
+func (c *Client) SendPromptStream(contextID, taskID, prompt string, eventChan chan<- StreamEvent) (string, string, error) {
 	messageID := uuid.New().String()
 
 	params := map[string]interface{}{
@@ -245,11 +245,9 @@ func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- Str
 			"parts": []map[string]string{
 				{"kind": "text", "text": prompt},
 			},
+			"contextId": contextID,
+			"taskId":    taskID,
 		},
-	}
-
-	if contextID != "" {
-		params["contextId"] = contextID
 	}
 
 	requestPayload := map[string]interface{}{
@@ -261,12 +259,13 @@ func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- Str
 
 	reqBody, err := json.Marshal(requestPayload)
 	if err != nil {
-		return err
+		return "", "", err
 	}
+	fmt.Printf("Sending request to a2a-server: %s\n", string(reqBody))
 
 	req, err := http.NewRequest("POST", c.baseURL, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -274,14 +273,15 @@ func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- Str
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("a2a-server returned non-200 status: %d", resp.StatusCode)
+		return "", "", fmt.Errorf("a2a-server returned non-200 status: %d", resp.StatusCode)
 	}
 
+	var cID, tID string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -297,12 +297,17 @@ func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- Str
 			}
 
 			var genericEvent struct {
-				Kind string `json:"kind"`
+				Kind      string `json:"kind"`
+				ContextID string `json:"contextId"`
+				TaskID    string `json:"taskId"`
 			}
 			if err := json.Unmarshal(sseResponse.Result, &genericEvent); err != nil {
 				fmt.Printf("Error unmarshalling generic event: %v\n", err)
 				continue
 			}
+
+			cID = genericEvent.ContextID
+			tID = genericEvent.TaskID
 
 			switch genericEvent.Kind {
 			case "message":
@@ -344,8 +349,8 @@ func (c *Client) SendPromptStream(contextID, prompt string, eventChan chan<- Str
 	}
 
 	if err := scanner.Err(); err != nil {
-		return err
+		return "", "", err
 	}
 
-	return nil
+	return cID, tID, nil
 }
