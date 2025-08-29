@@ -2,6 +2,8 @@
 
 Gemini Srv is a web server and API that provides a user-friendly interface for interacting with the `gemini-cli` tool. It allows for persistent, context-aware conversations and includes a powerful scheduler for running autonomous, scheduled tasks.
 
+![gemini-srv-gif2](https://github.com/user-attachments/assets/124a907f-fdb2-44e7-b984-4549930d546b)
+
 ## Use Cases
 
 -   **AI Assistant on a VM at your disposal:** Deploy Gemini Srv on a virtual machine to have a dedicated AI assistant accessible from anywhere.
