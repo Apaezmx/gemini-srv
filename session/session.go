@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"gemini-srv/internal/a2aclient"
+	"gemini-srv/internal/stats"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 // Session represents a single user's conversational history.
 type Session struct {
 	ID               string    `json:"id"`
+	Name             string    `json:"name"`
 	History          []string  `json:"history"`
 	LastAccess       time.Time `json:"last_access"`
 	WorkingDirectory string    `json:"working_directory"`
@@ -24,11 +26,12 @@ type Manager struct {
 	sessions        map[string]*Session
 	mu              sync.Mutex
 	sessionDataPath string
-	a2aClient       *a2aclient.Client
+	a2aClient       a2aclient.A2AClient
+	stats           *stats.Stats
 }
 
 // NewManager creates a new session manager.
-func NewManager(baseDir string, client *a2aclient.Client) (*Manager, error) {
+func NewManager(baseDir string, client a2aclient.A2AClient, stats *stats.Stats) (*Manager, error) {
 	fmt.Println("Creating new session manager...")
 	dataPath := filepath.Join(baseDir, "data/conversations")
 	if err := os.MkdirAll(dataPath, 0755); err != nil {
@@ -38,6 +41,7 @@ func NewManager(baseDir string, client *a2aclient.Client) (*Manager, error) {
 		sessions:        make(map[string]*Session),
 		sessionDataPath: dataPath,
 		a2aClient:       client,
+		stats:           stats,
 	}
 	return m, nil
 }
@@ -93,6 +97,7 @@ func (m *Manager) CreateSession(sessionID, workingDir string) (*Session, error) 
 	defer m.mu.Unlock()
 	session := &Session{
 		ID:               sessionID,
+		Name:             "New Conversation",
 		History:          make([]string, 0),
 		LastAccess:       time.Now(),
 		WorkingDirectory: workingDir,
@@ -106,10 +111,15 @@ func (m *Manager) CreateSession(sessionID, workingDir string) (*Session, error) 
 
 // RunPrompt sends a prompt to the a2a-server.
 func (m *Manager) RunPrompt(s *Session, prompt string) (string, error) {
-	// The a2a-server manages its own history, but we can prepend our history
-	// to the prompt for now to maintain context.
-	fullPrompt := strings.Join(s.History, "\n") + "\n" + prompt
-	response, err := m.a2aClient.SendPrompt(fullPrompt)
+	startTime := time.Now()
+	response, err := m.a2aClient.SendPrompt(s.ID, prompt)
+	latency := time.Since(startTime)
+
+	m.stats.RecordCall(latency, len(prompt), len(response))
+
+	if len(s.History) == 0 {
+		s.Name = generateNameFromPrompt(prompt)
+	}
 
 	s.History = append(s.History, "User: "+prompt)
 	s.History = append(s.History, "Gemini: "+response)
@@ -119,6 +129,71 @@ func (m *Manager) RunPrompt(s *Session, prompt string) (string, error) {
 	}
 
 	return response, err
+}
+
+// RunPromptAsTask sends a prompt to the a2a-server and creates a new task.
+func (m *Manager) RunPromptAsTask(s *Session, prompt string) (string, error) {
+	startTime := time.Now()
+	taskID, err := m.a2aClient.SendPromptAsTask(s.ID, prompt)
+	latency := time.Since(startTime)
+
+	m.stats.RecordCall(latency, len(prompt), 0)
+
+	if len(s.History) == 0 {
+		s.Name = generateNameFromPrompt(prompt)
+	}
+
+	s.History = append(s.History, "User: "+prompt)
+	s.History = append(s.History, "Gemini: (task "+taskID+")")
+
+	if saveErr := s.save(m.sessionDataPath); saveErr != nil {
+		return taskID, fmt.Errorf("original error: %v, failed to save session: %w", err, saveErr)
+	}
+
+	return taskID, err
+}
+
+// RunPromptStream sends a prompt to the a2a-server and streams the response.
+func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- a2aclient.StreamEvent) error {
+	startTime := time.Now()
+	var responseText strings.Builder
+
+	internalChan := make(chan a2aclient.StreamEvent)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		for event := range internalChan {
+			if event.Kind == "text" {
+				responseText.WriteString(event.Text)
+			}
+			eventChan <- event
+		}
+	}()
+
+	err := m.a2aClient.SendPromptStream(s.ID, prompt, internalChan)
+	close(internalChan)
+	wg.Wait()
+
+	latency := time.Since(startTime)
+	m.stats.RecordCall(latency, len(prompt), responseText.Len())
+
+	if len(s.History) == 0 {
+		s.Name = generateNameFromPrompt(prompt)
+	}
+
+	s.History = append(s.History, "User: "+prompt)
+	s.History = append(s.History, "Gemini: "+responseText.String())
+
+	if saveErr := s.save(m.sessionDataPath); saveErr != nil {
+		if err != nil {
+			return fmt.Errorf("stream error: %v, failed to save session: %w", err, saveErr)
+		}
+		return fmt.Errorf("failed to save session: %w", saveErr)
+	}
+
+	return err
 }
 
 // DeleteSession deletes the session file.
@@ -134,17 +209,41 @@ func (m *Manager) DeleteSession(sessionID string) error {
 	return nil
 }
 
-// ListConversations returns the IDs of all persisted conversations.
-func (m *Manager) ListConversations() ([]string, error) {
+type ConversationInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListConversations returns the IDs and names of all persisted conversations.
+func (m *Manager) ListConversations() ([]ConversationInfo, error) {
 	files, err := os.ReadDir(m.sessionDataPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read sessions directory: %w", err)
 	}
-	var ids []string
+	var conversations []ConversationInfo
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
-			ids = append(ids, strings.TrimSuffix(file.Name(), ".json"))
+			sessionID := strings.TrimSuffix(file.Name(), ".json")
+			session, err := m.AcquireSession(sessionID)
+			if err != nil {
+				// Log the error and skip the conversation
+				fmt.Printf("Error loading conversation %s: %v\n", sessionID, err)
+				continue
+			}
+			conversations = append(conversations, ConversationInfo{ID: session.ID, Name: session.Name})
 		}
 	}
-	return ids, nil
+	return conversations, nil
+}
+
+func generateNameFromPrompt(prompt string) string {
+	words := strings.Fields(prompt)
+	if len(words) > 5 {
+		words = words[:5]
+	}
+	name := strings.Join(words, " ")
+	if len(name) > 50 {
+		name = name[:50]
+	}
+	return name
 }

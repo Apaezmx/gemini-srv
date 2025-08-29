@@ -11,3 +11,7 @@ test_tasks/
 
 # OS-specific files
 .DS_Store
+
+# Coverage output files
+cover.out
+coverage.out

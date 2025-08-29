@@ -10,7 +10,11 @@
         <div class="sidebar">
             <div class="sidebar-header">
                 <h2>Gemini Srv</h2>
-                <button id="new-conv-btn">+ New Conversation</button>
+                <div id="server-info">
+                    <div id="model-info"></div>
+                    <div id="stats-info"></div>
+                </div>
+                <button id="new-conv-btn">New Conversation</button>
             </div>
             <div class="nav-section">
                 <h3>Conversations</h3>
@@ -39,11 +43,28 @@
                 </div>
             </div>
 
-            <div id="task-view" class="view" style="display: none;">
-                <div class="task-header">
-                    <h3 id="task-title"></h3>
+            <div id="task-view" style="display: none;">
+                <h2 id="task-title"></h2>
+                <div id="task-details-view">
+                    <form id="task-form">
+                        <label for="task-name">Name:</label>
+                        <input type="text" id="task-name" name="name" readonly>
+                        <label for="task-description">Description:</label>
+                        <textarea id="task-description" name="description"></textarea>
+                        <label for="task-schedule">Schedule:</label>
+                        <input type="text" id="task-schedule" name="schedule">
+                        <label for="task-context-path">Context Path:</label>
+                        <input type="text" id="task-context-path" name="context_path">
+                        <label for="task-data-command">Data Command:</label>
+                        <textarea id="task-data-command" name="data_command"></textarea>
+                        <label for="task-prompt">Prompt:</label>
+                        <textarea id="task-prompt" name="prompt"></textarea>
+                        <button type="submit">Save</button>
+                        <button type="button" id="delete-task-btn">Delete</button>
+                    </form>
                 </div>
-                <div class="task-logs" id="task-logs">
+                <div id="task-logs-view" style="display: none;">
+                    <h3>Logs</h3>
                     <pre></pre>
                 </div>
             </div>
