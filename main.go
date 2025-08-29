@@ -30,7 +30,7 @@ var (
 
 // isA2AServerRunning checks if the a2a-server is already running on the specified port.
 func isA2AServerRunning(port string) bool {
-	url := fmt.Sprintf("http://localhost:%s/", port)
+	url := fmt.Sprintf("http://localhost:%s/.well-known/agent-card.json", port)
 	client := http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
