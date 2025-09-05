@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gemini-srv/internal/scheduler"
 	"gemini-srv/internal/stats"
@@ -172,6 +173,7 @@ func postPromptStreamHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
+	log.Printf("Using session %v\n", s)
 
 	_, p, err := conn.ReadMessage()
 	if err != nil {
@@ -197,8 +199,13 @@ func postPromptStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Waiting for events on eventChan...")
 	for event := range eventChan {
-		log.Printf("Relaying event to websocket: %+v\n", event.Result)
-		if err := conn.WriteJSON(event.Result); err != nil {
+		out, err := event.MarshalJSON()
+		if err != nil {
+			log.Printf("Error marshaling event: %v\n", err)
+			continue
+		}
+		log.Printf("Relaying event to websocket: %s\n", out)
+		if err := conn.WriteJSON(event); err != nil {
 			log.Printf("Error writing to websocket: %v\n", err)
 			return
 		}
@@ -327,7 +334,7 @@ func main() {
 		log.Fatal("A2A_SERVER_URL environment variable not set")
 	}
 
-	a2aClient, err := client.NewA2AClient(a2aServerURL)
+	a2aClient, err := client.NewA2AClient(a2aServerURL, client.WithTimeout(5*time.Minute))
 	if err != nil {
 		log.Fatal("Error creating a2a client:", err)
 	}

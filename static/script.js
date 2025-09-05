@@ -191,7 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 loadingIndicator.remove();
             }
 
-            const data = JSON.parse(event.data);
+            const data = JSON.parse(event.data).Result;
             console.log("Received WS data:", data); // For debugging
 
             // Helper function to process message parts and display text
@@ -205,9 +205,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 parts.forEach(part => {
                     if (part.kind === 'text') {
-                        geminiMessageDiv.textContent += part.text;
+                        geminiMessageDiv.innerHTML += part.text.replace(/\n/g, '<br>');
                     }
                 });
+            };
+
+            const createToolApprovalUI = (toolCall) => {
+                const toolApprovalDiv = document.createElement('div');
+                toolApprovalDiv.className = 'tool-approval';
+                toolApprovalDiv.innerHTML = `
+                    <h5>Tool Call</h5>
+                    <p><strong>Tool:</strong> ${toolCall.toolName}</p>
+                    <p><strong>Arguments:</strong></p>
+                    <pre>${JSON.stringify(toolCall.args, null, 2)}</pre>
+                    <div class="buttons">
+                        <button class="approve">Approve</button>
+                        <button class="cancel">Cancel</button>
+                    </div>
+                `;
+                agentResponseContainer.insertBefore(toolApprovalDiv, geminiMessageDiv);
+
+                const approveBtn = toolApprovalDiv.querySelector('.approve');
+                const cancelBtn = toolApprovalDiv.querySelector('.cancel');
+
+                const handleApproval = (approved) => {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const responseSocket = new WebSocket(`${protocol}//${window.location.host}/api/v1/conversations/${currentConversationId}/user-response`);
+                    responseSocket.onopen = () => {
+                        responseSocket.send(JSON.stringify({ approved }));
+                        toolApprovalDiv.remove();
+                    };
+                };
+
+                approveBtn.addEventListener('click', () => handleApproval(true));
+                cancelBtn.addEventListener('click', () => handleApproval(false));
             };
 
             switch (data.kind) {
@@ -223,14 +254,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     thinkingBox.innerHTML = `<h5>Task Created</h5><p>Status: ${data.status.state}</p>`;
                     break;
-
+                case 'status-update':
                 case 'task_status_update':
-                    if (!thinkingBox) {
-                        thinkingBox = document.createElement('div');
-                        thinkingBox.className = 'thinking-box';
-                        agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                    if (data.metadata.coderAgent.kind === 'thought') {
+                        if (!thinkingBox) {
+                            thinkingBox = document.createElement('div');
+                            thinkingBox.className = 'thinking-box';
+                            agentResponseContainer.insertBefore(thinkingBox, geminiMessageDiv);
+                        }
+                        let content = '<h5>Thinking...</h5>';
+                        if (data.status.message && data.status.message.parts) {
+                            data.status.message.parts.forEach(part => {
+                                if (part.kind === 'data') {
+                                    content += `<p>${part.data.description}</p>`;
+                                }
+                            });
+                        }
+                        thinkingBox.innerHTML = content;
+                    } else {
+                        if (thinkingBox) {
+                            thinkingBox.remove();
+                            thinkingBox = null;
+                        }
                     }
-                    thinkingBox.innerHTML = `<h5>Task Status: ${data.status.state}</h5>`;
 
                     if (data.status.message && data.status.message.parts) {
                         processMessageParts(data.status.message.parts);

@@ -33,3 +33,5 @@ require (
 	golang.org/x/oauth2 v0.29.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 )
+
+replace trpc.group/trpc-go/trpc-a2a-go => ../trpc-a2a-go

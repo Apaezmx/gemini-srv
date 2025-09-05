@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gemini-srv/internal/stats"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"gemini-srv/internal/stats"
+
 	"github.com/google/uuid"
+
 	"trpc.group/trpc-go/trpc-a2a-go/client"
 	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 )
@@ -196,6 +199,16 @@ func (m *Manager) RunPromptAsTask(s *Session, prompt string) (string, error) {
 	return taskID, err
 }
 
+func extractTextFromMessage(msg *protocol.Message) string {
+	var text strings.Builder
+	for _, part := range msg.Parts {
+		if textPart, ok := part.(*protocol.TextPart); ok {
+			text.WriteString(textPart.Text)
+		}
+	}
+	return text.String()
+}
+
 // RunPromptStream sends a prompt to the a2a-server and streams the response.
 func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- protocol.StreamingMessageEvent) error {
 	startTime := time.Now()
@@ -223,17 +236,51 @@ func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- pr
 	go func() {
 		defer wg.Done()
 		for event := range internalChan {
-			if msg, ok := event.Result.(*protocol.Message); ok {
-				for _, part := range msg.Parts {
-					if textPart, ok := part.(protocol.TextPart); ok {
-						responseText.WriteString(textPart.Text)
+			// Process the received event
+			switch event.Result.GetKind() {
+			case protocol.KindMessage:
+				msg := event.Result.(*protocol.Message)
+				text := extractTextFromMessage(msg)
+				log.Printf("Received Message - MessageID: %s\n", msg.MessageID)
+				log.Printf("  Message Text: %s\n", text)
+				responseText.WriteString(text)
+				s.ContextID = *msg.ContextID
+				s.TaskID = *msg.TaskID
+			case protocol.KindTaskArtifactUpdate:
+				artifact := event.Result.(*protocol.TaskArtifactUpdateEvent)
+				log.Printf("Received Artifact Update - TaskID: %s, ArtifactID: %s\n", artifact.TaskID, artifact.Artifact.ArtifactID)
+				for _, part := range artifact.Artifact.Parts {
+					if textPart, ok := part.(*protocol.TextPart); ok {
+						log.Printf("  Artifact Text (Reversed Text): %s\n", textPart.Text)
 					}
 				}
-				asJson, err := json.Marshal(msg)
-				if err != nil {
-					fmt.Println("error:", err)
+
+				// For artifact updates, we note it's the final artifact,
+				// but we don't exit yet - per A2A spec, we should wait for the final status update
+				if artifact.LastChunk != nil && *artifact.LastChunk {
+					log.Printf("Received final artifact update, waiting for final status.\n")
 				}
-				fmt.Println("a2a event:", asJson)
+				s.ContextID = artifact.ContextID
+				s.TaskID = artifact.TaskID
+			case protocol.KindTask:
+				task := event.Result.(*protocol.Task)
+				log.Printf("Received Task - TaskID: %s, State: %s\n", task.ID, task.Status.State)
+				s.ContextID = task.ContextID
+				s.TaskID = task.ID
+			case protocol.KindTaskStatusUpdate:
+				statusUpdate := event.Result.(*protocol.TaskStatusUpdateEvent)
+				log.Printf("Received Task Status Update - TaskID: %s, State: %s\n", statusUpdate.TaskID, statusUpdate.Status.State)
+				// Gemini-CLI seems to respond on status updates...
+				msg := statusUpdate.Status.Message
+				if msg != nil && msg.Kind == protocol.KindMessage {
+					text := extractTextFromMessage(msg)
+					log.Printf("  Message Text: %s\n", text)
+					responseText.WriteString(text)
+				}
+				s.ContextID = statusUpdate.ContextID
+				s.TaskID = statusUpdate.TaskID
+			default:
+				log.Printf("Received unknown event type: %T %v\n", event, event)
 			}
 			eventChan <- event
 		}
