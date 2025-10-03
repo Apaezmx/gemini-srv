@@ -289,19 +289,6 @@ func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- pr
 		fmt.Println("a2aClient channel closed")
 	}()
 
-<<<<<<< HEAD
-	cID, tID, err := m.a2aClient.SendPromptStream(s.a2aContextID, s.a2aTaskID, prompt, internalChan)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Context ID: %s, Task ID: %s\n", cID, tID)
-	s.a2aContextID = cID
-	s.a2aTaskID = tID
-
-	close(internalChan)
-=======
->>>>>>> trpc
 	wg.Wait()
 
 	latency := time.Since(startTime)
