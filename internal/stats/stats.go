@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ func New() *Stats {
 }
 
 func (s *Stats) RecordCall(latency time.Duration, charsIn, charsOut int) {
+	log.Printf("Recording call: latency=%v, charsIn=%d, charsOut=%d\n", latency, charsIn, charsOut)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.TotalCalls++
@@ -34,9 +36,9 @@ func (s *Stats) Get() map[string]interface{} {
 		avgLatency = s.TotalLatency.Milliseconds() / int64(s.TotalCalls)
 	}
 	return map[string]interface{}{
-		"total_calls":      s.TotalCalls,
-		"avg_latency_ms":   avgLatency,
-		"total_chars_in":   s.TotalCharsIn,
-		"total_chars_out":  s.TotalCharsOut,
+		"total_calls":     s.TotalCalls,
+		"avg_latency_ms":  avgLatency,
+		"total_chars_in":  s.TotalCharsIn,
+		"total_chars_out": s.TotalCharsOut,
 	}
 }

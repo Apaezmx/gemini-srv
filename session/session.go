@@ -1,15 +1,22 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"gemini-srv/internal/a2aclient"
-	"gemini-srv/internal/stats"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"gemini-srv/internal/stats"
+
+	"github.com/google/uuid"
+
+	"trpc.group/trpc-go/trpc-a2a-go/client"
+	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 )
 
 // Session represents a single user's conversational history.
@@ -21,6 +28,8 @@ type Session struct {
 	History          []string  `json:"history"`
 	LastAccess       time.Time `json:"last_access"`
 	WorkingDirectory string    `json:"working_directory"`
+	ContextID        string    `json:"context_id"`
+	TaskID           string    `json:"task_id"`
 }
 
 // Manager handles all active sessions.
@@ -28,12 +37,12 @@ type Manager struct {
 	sessions        map[string]*Session
 	mu              sync.Mutex
 	sessionDataPath string
-	a2aClient       a2aclient.A2AClient
+	a2aClient       *client.A2AClient
 	stats           *stats.Stats
 }
 
 // NewManager creates a new session manager.
-func NewManager(baseDir string, client a2aclient.A2AClient, stats *stats.Stats) (*Manager, error) {
+func NewManager(baseDir string, client *client.A2AClient, stats *stats.Stats) (*Manager, error) {
 	fmt.Println("Creating new session manager...")
 	dataPath := filepath.Join(baseDir, "data/conversations")
 	if err := os.MkdirAll(dataPath, 0755); err != nil {
@@ -114,30 +123,67 @@ func (m *Manager) CreateSession(sessionID, workingDir string) (*Session, error) 
 // RunPrompt sends a prompt to the a2a-server.
 func (m *Manager) RunPrompt(s *Session, prompt string) (string, error) {
 	startTime := time.Now()
-	response, err := m.a2aClient.SendPrompt(s.ID, prompt)
+	params := protocol.SendMessageParams{
+		Message: protocol.Message{
+			ContextID: &s.ID,
+			Parts: []protocol.Part{
+				protocol.NewTextPart(prompt),
+			},
+		},
+	}
+	response, err := m.a2aClient.SendMessage(context.Background(), params)
 	latency := time.Since(startTime)
 
-	m.stats.RecordCall(latency, len(prompt), len(response))
+	var responseText string
+	if response != nil {
+		if msg, ok := response.Result.(*protocol.Message); ok {
+			for _, part := range msg.Parts {
+				if textPart, ok := part.(protocol.TextPart); ok {
+					responseText += textPart.Text
+				}
+			}
+		}
+	}
+
+	m.stats.RecordCall(latency, len(prompt), len(responseText))
 
 	if len(s.History) == 0 {
 		s.Name = generateNameFromPrompt(prompt)
 	}
 
 	s.History = append(s.History, "User: "+prompt)
-	s.History = append(s.History, "Gemini: "+response)
+	s.History = append(s.History, "Gemini: "+responseText)
 
 	if saveErr := s.save(m.sessionDataPath); saveErr != nil {
-		return response, fmt.Errorf("original error: %v, failed to save session: %w", err, saveErr)
+		return responseText, fmt.Errorf("original error: %v, failed to save session: %w", err, saveErr)
 	}
 
-	return response, err
+	return responseText, err
 }
 
 // RunPromptAsTask sends a prompt to the a2a-server and creates a new task.
 func (m *Manager) RunPromptAsTask(s *Session, prompt string) (string, error) {
 	startTime := time.Now()
-	taskID, err := m.a2aClient.SendPromptAsTask(s.ID, prompt)
+	params := protocol.SendMessageParams{
+		Message: protocol.Message{
+			ContextID: &s.ID,
+			Parts: []protocol.Part{
+				protocol.NewTextPart(prompt),
+			},
+		},
+		Configuration: &protocol.SendMessageConfiguration{
+			AcceptedOutputModes: []string{"task"},
+		},
+	}
+	response, err := m.a2aClient.SendMessage(context.Background(), params)
 	latency := time.Since(startTime)
+
+	var taskID string
+	if response != nil {
+		if task, ok := response.Result.(*protocol.Task); ok {
+			taskID = task.ID
+		}
+	}
 
 	m.stats.RecordCall(latency, len(prompt), 0)
 
@@ -155,25 +201,95 @@ func (m *Manager) RunPromptAsTask(s *Session, prompt string) (string, error) {
 	return taskID, err
 }
 
+func extractTextFromMessage(msg *protocol.Message) string {
+	var text strings.Builder
+	for _, part := range msg.Parts {
+		if textPart, ok := part.(*protocol.TextPart); ok {
+			text.WriteString(textPart.Text)
+		}
+	}
+	return text.String()
+}
+
 // RunPromptStream sends a prompt to the a2a-server and streams the response.
-func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- a2aclient.StreamEvent) error {
+func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- protocol.StreamingMessageEvent) error {
 	startTime := time.Now()
 	var responseText strings.Builder
 
-	internalChan := make(chan a2aclient.StreamEvent)
+	params := protocol.SendMessageParams{
+		Message: protocol.Message{
+			MessageID: uuid.New().String(),
+			ContextID: &s.ContextID,
+			TaskID:    &s.TaskID,
+			Parts: []protocol.Part{
+				protocol.NewTextPart(prompt),
+			},
+		},
+	}
+
+	internalChan, err := m.a2aClient.StreamMessage(context.Background(), params)
+	if err != nil {
+		return err
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
 		for event := range internalChan {
-			if event.Kind == "text" {
-				responseText.WriteString(event.Text)
+			// Process the received event
+			switch event.Result.GetKind() {
+			case protocol.KindMessage:
+				msg := event.Result.(*protocol.Message)
+				text := extractTextFromMessage(msg)
+				log.Printf("Received Message - MessageID: %s\n", msg.MessageID)
+				log.Printf("  Message Text: %s\n", text)
+				responseText.WriteString(text)
+				s.ContextID = *msg.ContextID
+				s.TaskID = *msg.TaskID
+			case protocol.KindTaskArtifactUpdate:
+				artifact := event.Result.(*protocol.TaskArtifactUpdateEvent)
+				log.Printf("Received Artifact Update - TaskID: %s, ArtifactID: %s\n", artifact.TaskID, artifact.Artifact.ArtifactID)
+				for _, part := range artifact.Artifact.Parts {
+					if textPart, ok := part.(*protocol.TextPart); ok {
+						log.Printf("  Artifact Text (Reversed Text): %s\n", textPart.Text)
+					}
+				}
+
+				// For artifact updates, we note it's the final artifact,
+				// but we don't exit yet - per A2A spec, we should wait for the final status update
+				if artifact.LastChunk != nil && *artifact.LastChunk {
+					log.Printf("Received final artifact update, waiting for final status.\n")
+				}
+				s.ContextID = artifact.ContextID
+				s.TaskID = artifact.TaskID
+			case protocol.KindTask:
+				task := event.Result.(*protocol.Task)
+				log.Printf("Received Task - TaskID: %s, State: %s\n", task.ID, task.Status.State)
+				s.ContextID = task.ContextID
+				s.TaskID = task.ID
+			case protocol.KindTaskStatusUpdate:
+				statusUpdate := event.Result.(*protocol.TaskStatusUpdateEvent)
+				log.Printf("Received Task Status Update - TaskID: %s, State: %s\n", statusUpdate.TaskID, statusUpdate.Status.State)
+				// Gemini-CLI seems to respond on status updates...
+				msg := statusUpdate.Status.Message
+				if msg != nil && msg.Kind == protocol.KindMessage {
+					text := extractTextFromMessage(msg)
+					log.Printf("  Message Text: %s\n", text)
+					responseText.WriteString(text)
+				}
+				s.ContextID = statusUpdate.ContextID
+				s.TaskID = statusUpdate.TaskID
+			default:
+				log.Printf("Received unknown event type: %T %v\n", event, event)
 			}
 			eventChan <- event
 		}
+		fmt.Println("a2aClient channel closed")
 	}()
 
+<<<<<<< HEAD
 	cID, tID, err := m.a2aClient.SendPromptStream(s.a2aContextID, s.a2aTaskID, prompt, internalChan)
 	if err != nil {
 		return err
@@ -184,6 +300,8 @@ func (m *Manager) RunPromptStream(s *Session, prompt string, eventChan chan<- a2
 	s.a2aTaskID = tID
 
 	close(internalChan)
+=======
+>>>>>>> trpc
 	wg.Wait()
 
 	latency := time.Since(startTime)
